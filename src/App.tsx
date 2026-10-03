@@ -27,7 +27,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -35,6 +34,7 @@ import {
   View,
   ActivityIndicator,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "./components/EmptyState";
 import { AuthModal } from "./components/AuthModal";
 import { ExplorePage } from "./pages/ExplorePage";
@@ -45,7 +45,15 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SavedPage } from "./pages/SavedPage";
 import { seedListings } from "./data";
 import { auth, db, firebaseConfigured } from "./firebase";
-import { getAuthErrorMessage, signInWithEmail, signUpWithEmail } from "./auth";
+import {
+  confirmPhoneVerification,
+  getAuthErrorMessage,
+  getPendingPhoneNumber,
+  requestPasswordReset,
+  sendPhoneVerificationCode,
+  signInWithEmail,
+  signUpWithEmail,
+} from "./auth";
 import { createListing, markListingAsSold } from "./listings";
 import { convertToUsd, Currency, fetchUsdToLkrRate, formatPrice } from "./currency";
 import {
@@ -77,6 +85,14 @@ const SELL_CATEGORIES = [
 const CONDITION_OPTIONS = ["Like New", "Good condition", "Fair", "For Parts"];
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <MarketplaceApp />
+    </SafeAreaProvider>
+  );
+}
+
+function MarketplaceApp() {
   const [tab, setTab] = useState<Tab>("Explore");
   const [items, setItems] = useState<Listing[]>(db ? [] : seedListings);
   const [queryText, setQueryText] = useState("");
@@ -86,9 +102,10 @@ export default function App() {
   const [sortBy, setSortBy] = useState<"newest" | "price-asc" | "price-desc">("newest");
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [selected, setSelected] = useState<Listing | null>(null);
-  const [user, setUser] = useState<User | null>(auth?.currentUser || null);
+  const [user, setUser] = useState<User | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [pendingTab, setPendingTab] = useState<Tab | null>(null);
+  const [pendingPhoneNumber, setPendingPhoneNumber] = useState<string | null>(null);
   const [sellOpen, setSellOpen] = useState(false);
   const [authError, setAuthError] = useState("");
   const [profileReady, setProfileReady] = useState(false);
@@ -96,13 +113,54 @@ export default function App() {
   const [profilePhotoURL, setProfilePhotoURL] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [exchangeRateError, setExchangeRateError] = useState("");
+  const authFlowPending = useRef(false);
   const colors = themeColors[settings.theme];
 
   useEffect(() => {
     const firebaseAuth = auth;
     if (!firebaseAuth) return;
     const handleUser = (nextUser: User | null) => {
-      setUser(nextUser);
+      if (!nextUser) {
+        if (!authFlowPending.current) {
+          setUser(null);
+          setPendingPhoneNumber(null);
+        }
+        return;
+      }
+      if (authFlowPending.current) return;
+      if (Platform.OS !== "web") {
+        setUser(nextUser);
+        return;
+      }
+
+      authFlowPending.current = true;
+      getPendingPhoneNumber(nextUser.uid)
+        .then((phoneNumber) => {
+          if (firebaseAuth.currentUser?.uid !== nextUser.uid) return;
+          if (phoneNumber) {
+            setUser(null);
+            setPendingPhoneNumber(phoneNumber);
+            setAuthOpen(true);
+            setAuthError("");
+            setTab("Explore");
+            return;
+          }
+          setPendingPhoneNumber(null);
+          setUser(nextUser);
+        })
+        .catch((error) => {
+          if (firebaseAuth.currentUser?.uid !== nextUser.uid) return;
+          setUser(null);
+          setAuthOpen(true);
+          setAuthError(
+            error instanceof Error
+              ? error.message
+              : "Could not check your phone verification status.",
+          );
+        })
+        .finally(() => {
+          authFlowPending.current = false;
+        });
     };
     let unsubscribe: () => void = () => undefined;
     const persistence =
@@ -302,11 +360,16 @@ export default function App() {
     }
     setTab(destination);
   };
-  const completeSignIn = (signedInUser: User) => {
+  const completeSignIn = (
+    signedInUser: User,
+    destination: Tab = pendingTab || "Explore",
+  ) => {
+    authFlowPending.current = false;
+    setPendingPhoneNumber(null);
     setUser(signedInUser);
     setAuthOpen(false);
     setAuthError("");
-    setTab(pendingTab || "Explore");
+    setTab(destination);
     setPendingTab(null);
   };
   const toggleSaved = (id: string) => {
@@ -390,9 +453,6 @@ export default function App() {
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
         base64: true,
       });
       if (result.canceled) return;
@@ -424,18 +484,90 @@ export default function App() {
     displayName: string,
     email: string,
     password: string,
+    phoneNumber: string,
     isSignUp: boolean,
   ) => {
+    authFlowPending.current = true;
     setAuthError("");
     try {
-      const signedInUser = isSignUp
-        ? await signUpWithEmail(displayName, email, password)
-        : await signInWithEmail(email, password);
+      if (isSignUp) {
+        const signedInUser = await signUpWithEmail(
+          displayName,
+          email,
+          password,
+          Platform.OS === "web" ? phoneNumber : undefined,
+        );
+        if (Platform.OS === "web") {
+          setPendingPhoneNumber(phoneNumber);
+          try {
+            const verificationId = await sendPhoneVerificationCode(phoneNumber);
+            return { phoneNumber, verificationId };
+          } catch (error) {
+            const message = getAuthErrorMessage(error);
+            setAuthError(message);
+            return { phoneNumber, verificationError: message };
+          }
+        }
+        completeSignIn(signedInUser);
+        return {};
+      }
+
+      const result = await signInWithEmail(email, password);
+      if (Platform.OS === "web" && result.pendingPhoneNumber) {
+        setPendingPhoneNumber(result.pendingPhoneNumber);
+        try {
+          const verificationId = await sendPhoneVerificationCode(
+            result.pendingPhoneNumber,
+          );
+          return {
+            phoneNumber: result.pendingPhoneNumber,
+            verificationId,
+          };
+        } catch (error) {
+          const message = getAuthErrorMessage(error);
+          setAuthError(message);
+          return {
+            phoneNumber: result.pendingPhoneNumber,
+            verificationError: message,
+          };
+        }
+      }
+
+      const signedInUser = result.user;
       completeSignIn(signedInUser);
+      return {};
+    } catch (error) {
+      authFlowPending.current = false;
+      const message = getAuthErrorMessage(error);
+      setAuthError(message);
+      throw new Error(message);
+    }
+  };
+  const resendPhoneVerificationCode = async (phoneNumber: string) => {
+    try {
+      return await sendPhoneVerificationCode(phoneNumber);
+    } catch (error) {
+      throw new Error(getAuthErrorMessage(error));
+    }
+  };
+  const verifyPhoneCode = async (verificationId: string, code: string) => {
+    try {
+      if (!auth?.currentUser) {
+        throw new Error("Your sign-in session ended. Please sign in again.");
+      }
+      await confirmPhoneVerification(auth.currentUser, verificationId, code);
+      completeSignIn(auth.currentUser, "Explore");
     } catch (error) {
       const message = getAuthErrorMessage(error);
       setAuthError(message);
       throw new Error(message);
+    }
+  };
+  const sendPasswordReset = async (email: string) => {
+    try {
+      await requestPasswordReset(email);
+    } catch (error) {
+      throw new Error(getAuthErrorMessage(error));
     }
   };
   const signInWithGoogle = async () => {
@@ -713,18 +845,35 @@ export default function App() {
         onClose={() => {
           setAuthOpen(false);
           setPendingTab(null);
+          setPendingPhoneNumber(null);
           setAuthError("");
+          if (authFlowPending.current) {
+            authFlowPending.current = false;
+            if (auth) {
+              signOut(auth).catch((error) =>
+                Alert.alert(
+                  "Could not cancel verification",
+                  error instanceof Error ? error.message : "Please try again.",
+                ),
+              );
+            }
+          }
         }}
         onClearError={() => setAuthError("")}
         onSubmit={submitEmailAuth}
+        onResendCode={resendPhoneVerificationCode}
+        onVerifyCode={verifyPhoneCode}
+        onForgotPassword={sendPasswordReset}
         onGoogleSignIn={firebaseConfigured && Platform.OS === "web" ? signInWithGoogle : undefined}
+        smsVerificationAvailable={Platform.OS === "web"}
+        pendingPhoneNumber={pendingPhoneNumber}
         error={
           authError ||
           (!firebaseConfigured
             ? "Firebase is not configured. Add the Firebase Web app values to .env and restart Expo."
             : "")
         }
-        colors={colors}
+        colors={themeColors.light}
       />
       <SellModal
         visible={sellOpen}
@@ -1085,9 +1234,6 @@ function SellModal({
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.75,
         base64: true,
       });
       if (result.canceled) return;
