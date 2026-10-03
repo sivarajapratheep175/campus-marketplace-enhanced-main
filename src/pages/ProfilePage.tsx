@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Text,
   View,
+  ActivityIndicator,
 } from "react-native";
 import { User } from "firebase/auth";
 import { PageTitle } from "../components/PageTitle";
@@ -13,6 +14,7 @@ import { ThemeColors } from "../theme";
 export function ProfilePage({
   user,
   photoURL,
+  photoBusy,
   colors,
   savedCount,
   listingCount,
@@ -24,9 +26,11 @@ export function ProfilePage({
   onSignIn,
   onSignOut,
   onSettings,
+  onUploadPhoto,
 }: {
   user: User | null;
   photoURL: string | null;
+  photoBusy: boolean;
   colors: ThemeColors;
   savedCount: number;
   listingCount: number;
@@ -38,6 +42,7 @@ export function ProfilePage({
   onSignIn: () => void;
   onSignOut: () => void;
   onSettings: () => void;
+  onUploadPhoto: () => void;
 }) {
   const name =
     user?.displayName || user?.email?.split("@")[0] || "Campus guest";
@@ -61,20 +66,45 @@ export function ProfilePage({
 
       {/* Hero / Avatar */}
       <View style={[styles.hero, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        {photoURL ? (
-          <Image source={{ uri: photoURL }} style={styles.avatar} />
-        ) : (
-          <View style={[styles.avatar, styles.avatarFallback, { backgroundColor: colors.accentSoft }]}>
-            <Text style={[styles.initials, { color: colors.accent }]}>
-              {user ? initials : "?"}
-            </Text>
-          </View>
-        )}
+        <View style={styles.avatarWrap}>
+          {photoURL ? (
+            <Image source={{ uri: photoURL }} style={styles.avatar} />
+          ) : (
+            <View style={[styles.avatar, styles.avatarFallback, { backgroundColor: colors.accentSoft }]}>
+              <Text style={[styles.initials, { color: colors.accent }]}>
+                {user ? initials : "?"}
+              </Text>
+            </View>
+          )}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={user ? "Upload profile photo" : "Sign in to add a profile photo"}
+            disabled={photoBusy}
+            onPress={user ? onUploadPhoto : onSignIn}
+            style={[styles.photoEditButton, { backgroundColor: colors.accent }]}
+          >
+            {photoBusy ? (
+              <ActivityIndicator size="small" color={colors.accentText} />
+            ) : (
+              <Text style={[styles.photoEditIcon, { color: colors.accentText }]}>✎</Text>
+            )}
+          </Pressable>
+        </View>
         <View style={styles.heroText}>
           <Text style={[styles.name, { color: colors.text }]}>{name}</Text>
           <Text style={[styles.email, { color: colors.muted }]}>
             {user?.email || "Sign in to sell and save"}
           </Text>
+          <Pressable
+            disabled={photoBusy}
+            onPress={user ? onUploadPhoto : onSignIn}
+            accessibilityRole="button"
+            style={styles.photoAction}
+          >
+            <Text style={[styles.photoActionText, { color: colors.accent }]}>
+              {photoBusy ? "Saving photo…" : user ? "Update profile photo" : "Add a profile photo"}
+            </Text>
+          </Pressable>
           {user && profileReady && (
             <View style={[styles.verifiedBadge, { backgroundColor: colors.accentSoft }]}>
               <Text style={[styles.verifiedText, { color: colors.accent }]}>
@@ -111,37 +141,66 @@ export function ProfilePage({
         </View>
       </View>
 
-      {/* Menu */}
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>Your activity</Text>
       <View style={[styles.menu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <MenuRow
-          icon="📦"
+          icon="▣"
           label="My listings"
           value={`${listingCount} item${listingCount !== 1 ? "s" : ""}`}
           onPress={onMyListings}
           colors={colors}
         />
         <MenuRow
-          icon="🔖"
+          icon="♡"
           label="Saved items"
           value={`${savedCount} saved`}
           onPress={onSaved}
           colors={colors}
         />
-        <MenuRow
-          icon="📍"
-          label="Meetup location"
-          value="North Campus"
-          colors={colors}
-        />
-        <MenuRow
-          icon="⚙️"
-          label="Settings"
-          value="Appearance & currency"
-          onPress={onSettings}
-          colors={colors}
-          last
-        />
       </View>
+
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>Map Location</Text>
+      <View
+        style={[
+          styles.locationCard,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
+        <View style={[styles.locationIconBox, { backgroundColor: colors.accentSoft }]}>
+          <Text style={[styles.locationIcon, { color: colors.accent }]}>⌖</Text>
+        </View>
+        <View style={styles.locationDetails}>
+          <Text style={[styles.locationName, { color: colors.text }]}>North Campus</Text>
+          <Text style={[styles.locationSubtitle, { color: colors.muted }]}>
+            Your preferred meetup area
+          </Text>
+        </View>
+        <View style={[styles.locationTag, { backgroundColor: colors.accentSoft }]}>
+          <Text style={[styles.locationTagText, { color: colors.accent }]}>CAMPUS</Text>
+        </View>
+      </View>
+
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>Settings</Text>
+      <Pressable
+        onPress={onSettings}
+        accessibilityRole="button"
+        accessibilityLabel="Open settings"
+        style={[
+          styles.settingsCard,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
+        <View style={[styles.settingsIconBox, { backgroundColor: colors.accentSoft }]}>
+          <Text style={[styles.settingsIcon, { color: colors.accent }]}>⚙</Text>
+        </View>
+        <View style={styles.settingsDetails}>
+          <Text style={[styles.settingsTitle, { color: colors.text }]}>Appearance & currency</Text>
+          <Text style={[styles.settingsSubtitle, { color: colors.muted }]}>
+            Theme, currency and profile photo
+          </Text>
+        </View>
+        <Text style={[styles.settingsChevron, { color: colors.muted }]}>›</Text>
+      </Pressable>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -202,7 +261,14 @@ function MenuRow({
       accessibilityRole={onPress ? "button" : undefined}
     >
       <View style={styles.rowLeft}>
-        <Text style={styles.rowIcon}>{icon}</Text>
+        <Text
+          style={[
+            styles.rowIcon,
+            { color: colors.accent, backgroundColor: colors.accentSoft },
+          ]}
+        >
+          {icon}
+        </Text>
         <Text style={[styles.label, { color: colors.text }]}>{label}</Text>
       </View>
       <View style={styles.rowRight}>
@@ -226,6 +292,7 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
   },
+  avatarWrap: { position: "relative" },
   avatar: {
     width: 68,
     height: 68,
@@ -235,6 +302,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  photoEditButton: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoEditIcon: { fontSize: 14, fontWeight: "800" },
+  photoAction: { alignSelf: "flex-start", paddingVertical: 2 },
+  photoActionText: { fontSize: 11, fontWeight: "700" },
   initials: { fontSize: 22, fontWeight: "800" },
   heroText: { flex: 1, gap: 4 },
   name: { fontSize: 20, fontWeight: "800" },
@@ -266,6 +348,12 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 11, fontWeight: "600" },
 
   // Menu
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    marginBottom: 9,
+    marginTop: 4,
+  },
   menu: {
     borderRadius: 16,
     paddingHorizontal: 16,
@@ -282,10 +370,63 @@ const styles = StyleSheet.create({
   rowLast: { borderBottomWidth: 0 },
   rowLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   rowRight: { flexDirection: "row", alignItems: "center", gap: 4 },
-  rowIcon: { fontSize: 18, width: 24, textAlign: "center" },
+  rowIcon: {
+    fontSize: 18,
+    width: 34,
+    height: 34,
+    lineHeight: 34,
+    textAlign: "center",
+    borderRadius: 11,
+    overflow: "hidden",
+    color: "#1F5D4C",
+    backgroundColor: "#E6F0E6",
+  },
   label: { fontWeight: "700", fontSize: 14 },
   muted: { fontSize: 12 },
   chevron: { fontSize: 20, fontWeight: "300" },
+  locationCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 18,
+  },
+  locationIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  locationIcon: { fontSize: 26, fontWeight: "700" },
+  locationDetails: { flex: 1, gap: 4 },
+  locationName: { fontSize: 14, fontWeight: "800" },
+  locationSubtitle: { fontSize: 11 },
+  locationTag: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8 },
+  locationTagText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
+  settingsCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 16,
+  },
+  settingsIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  settingsIcon: { fontSize: 20 },
+  settingsDetails: { flex: 1, gap: 4 },
+  settingsTitle: { fontSize: 14, fontWeight: "800" },
+  settingsSubtitle: { fontSize: 11 },
+  settingsChevron: { fontSize: 26, fontWeight: "300" },
 
   // Buttons
   primary: {

@@ -8,6 +8,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
 import { ListingCard } from "../components/ListingCard";
 import { categories } from "../data";
@@ -19,6 +20,7 @@ export function ExplorePage({
   items,
   query,
   category,
+  minPrice,
   maxPrice,
   sortBy,
   savedIds,
@@ -28,6 +30,7 @@ export function ExplorePage({
   colors,
   onQueryChange,
   onCategoryChange,
+  onMinPriceChange,
   onMaxPriceChange,
   onSortByChange,
   onResetFilters,
@@ -38,6 +41,7 @@ export function ExplorePage({
   items: Listing[];
   query: string;
   category: string;
+  minPrice: number;
   maxPrice: number | null;
   sortBy: "newest" | "price-asc" | "price-desc";
   savedIds: string[];
@@ -47,6 +51,7 @@ export function ExplorePage({
   colors: ThemeColors;
   onQueryChange: (value: string) => void;
   onCategoryChange: (value: string) => void;
+  onMinPriceChange: (value: number) => void;
   onMaxPriceChange: (value: number | null) => void;
   onSortByChange: (value: "newest" | "price-asc" | "price-desc") => void;
   onResetFilters: () => void;
@@ -54,9 +59,25 @@ export function ExplorePage({
   onOpen: (item: Listing) => void;
   onProfile: () => void;
 }) {
+  const [priceSliderOpen, setPriceSliderOpen] = useState(false);
+  const [sliderWidth, setSliderWidth] = useState(0);
+  const activeSliderThumb = useRef<"min" | "max">("max");
+  const maxSliderPrice = 120;
+  const selectedMaxPrice = maxPrice ?? maxSliderPrice;
+  const updatePriceFromEvent = (event: { nativeEvent: { locationX: number } }) => {
+    if (sliderWidth <= 0) return;
+    const progress = Math.max(0, Math.min(1, event.nativeEvent.locationX / sliderWidth));
+    const steppedPrice = Math.round((progress * maxSliderPrice) / 5) * 5;
+    if (activeSliderThumb.current === "min") {
+      onMinPriceChange(Math.max(0, Math.min(selectedMaxPrice - 5, steppedPrice)));
+    } else {
+      onMaxPriceChange(Math.max(minPrice + 5, Math.min(maxSliderPrice, steppedPrice)));
+    }
+  };
   const hasActiveFilters =
     query.trim().length > 0 ||
     category !== "All items" ||
+    minPrice > 0 ||
     maxPrice !== null ||
     sortBy !== "newest";
   return (
@@ -208,91 +229,119 @@ export function ExplorePage({
           </Pressable>
         </ScrollView>
 
-        <Text style={[styles.filterGroupTitle, { color: colors.muted, marginTop: 12 }]}>
-          Max Price
-        </Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterRow}
-        >
+        <View style={styles.priceFilterHeader}>
+          <Text style={[styles.filterGroupTitle, { color: colors.muted, marginTop: 12 }]}>
+            Price range
+          </Text>
           <Pressable
-            onPress={() => onMaxPriceChange(null)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: priceSliderOpen }}
+            onPress={() => setPriceSliderOpen((open) => !open)}
             style={[
-              styles.filterChip,
+              styles.priceFilterButton,
               {
-                backgroundColor: maxPrice === null ? colors.accent : colors.surface,
+                backgroundColor: maxPrice === null ? colors.surface : colors.accent,
                 borderColor: colors.border,
               },
             ]}
           >
-            <Text
-              style={[
-                styles.filterChipText,
-                { color: maxPrice === null ? colors.accentText : colors.text },
-              ]}
-            >
-              All Prices
+            <Text style={[styles.priceFilterButtonText, { color: maxPrice === null ? colors.text : colors.accentText }]}>
+              {minPrice > 0 || maxPrice !== null
+                ? `${formatPrice(minPrice, currency, exchangeRate)} – ${maxPrice === null ? formatPrice(maxSliderPrice, currency, exchangeRate) : formatPrice(maxPrice, currency, exchangeRate)}`
+                : "Any price"}
+            </Text>
+            <Text style={[styles.priceFilterChevron, { color: maxPrice === null ? colors.muted : colors.accentText }]}>
+              {priceSliderOpen ? "⌃" : "⌄"}
             </Text>
           </Pressable>
-          <Pressable
-            onPress={() => onMaxPriceChange(40)}
-            style={[
-              styles.filterChip,
-              {
-                backgroundColor: maxPrice === 40 ? colors.accent : colors.surface,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterChipText,
-                { color: maxPrice === 40 ? colors.accentText : colors.text },
-              ]}
+        </View>
+
+        {priceSliderOpen && (
+          <View style={styles.sliderPanel}>
+            <View style={styles.sliderValueRow}>
+              <Text style={[styles.sliderLabel, { color: colors.muted }]}>Maximum price</Text>
+              <Text style={[styles.sliderValue, { color: colors.accent }]}>
+                {minPrice > 0 || maxPrice !== null
+                  ? `${formatPrice(minPrice, currency, exchangeRate)} – ${maxPrice === null ? formatPrice(maxSliderPrice, currency, exchangeRate) : formatPrice(maxPrice, currency, exchangeRate)}`
+                  : "Any price"}
+              </Text>
+            </View>
+            <View
+              accessibilityRole="adjustable"
+              accessibilityLabel="Maximum price"
+              accessibilityValue={{ min: minPrice, max: selectedMaxPrice, now: selectedMaxPrice }}
+              accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+              onAccessibilityAction={(event) => {
+                const delta = event.nativeEvent.actionName === "increment" ? 5 : -5;
+                onMaxPriceChange(Math.max(minPrice + 5, Math.min(maxSliderPrice, selectedMaxPrice + delta)));
+              }}
+              onLayout={(event) => setSliderWidth(event.nativeEvent.layout.width)}
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderGrant={(event) => {
+                const tapProgress = event.nativeEvent.locationX / Math.max(sliderWidth, 1);
+                const tapPrice = tapProgress * maxSliderPrice;
+                activeSliderThumb.current =
+                  Math.abs(tapPrice - minPrice) < Math.abs(tapPrice - selectedMaxPrice)
+                    ? "min"
+                    : "max";
+                updatePriceFromEvent(event);
+              }}
+              onResponderMove={updatePriceFromEvent}
+              style={styles.sliderTouchArea}
             >
-              Under {formatPrice(40, currency, exchangeRate)}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => onMaxPriceChange(80)}
-            style={[
-              styles.filterChip,
-              {
-                backgroundColor: maxPrice === 80 ? colors.accent : colors.surface,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterChipText,
-                { color: maxPrice === 80 ? colors.accentText : colors.text },
-              ]}
+              <View style={[styles.sliderTrack, { backgroundColor: colors.border }]}>
+                <View
+                  style={[
+                    styles.sliderProgress,
+                    {
+                      backgroundColor: colors.accent,
+                      left: `${(minPrice / maxSliderPrice) * 100}%`,
+                      width: `${((selectedMaxPrice - minPrice) / maxSliderPrice) * 100}%`,
+                    },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.sliderThumb,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.accent,
+                      left: `${(minPrice / maxSliderPrice) * 100}%`,
+                    },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.sliderThumb,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.accent,
+                      left: `${(selectedMaxPrice / maxSliderPrice) * 100}%`,
+                    },
+                  ]}
+                />
+              </View>
+            </View>
+            <View style={styles.sliderBounds}>
+              <Text style={[styles.sliderBoundText, { color: colors.muted }]}>
+                {formatPrice(0, currency, exchangeRate)}
+              </Text>
+              <Text style={[styles.sliderBoundText, { color: colors.muted }]}>
+                {formatPrice(maxSliderPrice, currency, exchangeRate)}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => {
+                onMinPriceChange(0);
+                onMaxPriceChange(null);
+              }}
+              style={styles.anyPriceButton}
             >
-              Under {formatPrice(80, currency, exchangeRate)}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => onMaxPriceChange(120)}
-            style={[
-              styles.filterChip,
-              {
-                backgroundColor: maxPrice === 120 ? colors.accent : colors.surface,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterChipText,
-                { color: maxPrice === 120 ? colors.accentText : colors.text },
-              ]}
-            >
-              Under {formatPrice(120, currency, exchangeRate)}
-            </Text>
-          </Pressable>
-        </ScrollView>
+              <Text style={[styles.anyPriceText, { color: colors.accent }]}>Clear price limit</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
 
       {/* Active filters summary */}
@@ -466,6 +515,53 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
+  priceFilterHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  priceFilterButton: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    marginTop: 8,
+  },
+  priceFilterButtonText: { fontSize: 12, fontWeight: "700" },
+  priceFilterChevron: { fontSize: 16, fontWeight: "800" },
+  sliderPanel: {
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: "rgba(127, 143, 133, 0.08)",
+  },
+  sliderValueRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  sliderLabel: { fontSize: 12, fontWeight: "600" },
+  sliderValue: { fontSize: 14, fontWeight: "800" },
+  sliderTouchArea: { justifyContent: "center", height: 34, marginTop: 8 },
+  sliderTrack: { height: 5, borderRadius: 3, justifyContent: "center" },
+  sliderProgress: { position: "absolute", left: 0, height: 5, borderRadius: 3 },
+  sliderThumb: {
+    position: "absolute",
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 3,
+    marginLeft: -10,
+  },
+  sliderBounds: { flexDirection: "row", justifyContent: "space-between", marginTop: 2 },
+  sliderBoundText: { fontSize: 11 },
+  anyPriceButton: { alignSelf: "flex-end", paddingTop: 10 },
+  anyPriceText: { fontSize: 12, fontWeight: "700" },
   activeFilterChipText: {
     color: "#FFF",
     fontWeight: "700",

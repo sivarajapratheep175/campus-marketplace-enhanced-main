@@ -20,8 +20,9 @@ import {
   orderBy,
   query,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   Alert,
   Image,
   Modal,
@@ -79,6 +80,7 @@ export default function App() {
   const [items, setItems] = useState<Listing[]>(db ? [] : seedListings);
   const [queryText, setQueryText] = useState("");
   const [category, setCategory] = useState("All items");
+  const [minPrice, setMinPrice] = useState(0);
   const [maxPrice, setMaxPrice] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<"newest" | "price-asc" | "price-desc">("newest");
   const [savedIds, setSavedIds] = useState<string[]>([]);
@@ -244,7 +246,7 @@ export default function App() {
       if (!matchesCategory) return false;
 
       const matchesPrice =
-        maxPrice === null || item.price <= maxPrice;
+        item.price >= minPrice && (maxPrice === null || item.price <= maxPrice);
       if (!matchesPrice) return false;
 
       if (!q) return true;
@@ -262,11 +264,12 @@ export default function App() {
       if (sortBy === "price-desc") return b.price - a.price;
       return 0;
     });
-  }, [category, items, maxPrice, queryText, sortBy]);
+  }, [category, items, maxPrice, minPrice, queryText, sortBy]);
 
   const resetFilters = () => {
     setQueryText("");
     setCategory("All items");
+    setMinPrice(0);
     setMaxPrice(null);
     setSortBy("newest");
   };
@@ -558,6 +561,7 @@ export default function App() {
           items={filteredItems}
           query={queryText}
           category={category}
+          minPrice={minPrice}
           maxPrice={maxPrice}
           sortBy={sortBy}
           savedIds={savedIds}
@@ -567,6 +571,7 @@ export default function App() {
           colors={colors}
           onQueryChange={setQueryText}
           onCategoryChange={setCategory}
+          onMinPriceChange={setMinPrice}
           onMaxPriceChange={setMaxPrice}
           onSortByChange={setSortBy}
           onResetFilters={resetFilters}
@@ -602,6 +607,7 @@ export default function App() {
         <ProfilePage
           user={user}
           photoURL={profilePhotoURL}
+          photoBusy={photoBusy}
           colors={colors}
           savedCount={savedIds.length}
           listingCount={myListings.length}
@@ -612,6 +618,7 @@ export default function App() {
           onSaved={() => setTab("Saved")}
           onSignIn={() => setAuthOpen(true)}
           onSettings={() => setTab("Settings")}
+          onUploadPhoto={uploadPhoto}
           onSignOut={() => {
             if (auth) {
               signOut(auth).catch((error) =>
@@ -706,14 +713,14 @@ function BottomNav({
     >
       <NavItem
         label="Explore"
-        icon="🏠"
+        icon="⌂"
         active={tab === "Explore"}
         onPress={() => onChange("Explore")}
         colors={colors}
       />
       <NavItem
         label="Saved"
-        icon="🔖"
+        icon="♡"
         active={tab === "Saved"}
         badge={savedCount}
         onPress={() => onChange("Saved")}
@@ -727,18 +734,17 @@ function BottomNav({
         accessibilityRole="button"
       >
         <Text style={[styles.sellPlus, { color: colors.accentText }]}>＋</Text>
-        <Text style={[styles.sellText, { color: colors.accentText }]}>Sell</Text>
       </Pressable>
       <NavItem
         label="Messages"
-        icon="💬"
+        icon="▤"
         active={tab === "Messages"}
         onPress={() => onChange("Messages")}
         colors={colors}
       />
       <NavItem
         label="Profile"
-        icon="👤"
+        icon="♙"
         active={tab === "Profile"}
         onPress={() => onChange("Profile")}
         colors={colors}
@@ -762,6 +768,25 @@ function NavItem({
   onPress: () => void;
   colors: ThemeColors;
 }) {
+  const iconScale = useRef(new Animated.Value(active ? 1.08 : 1)).current;
+  const indicatorOpacity = useRef(new Animated.Value(active ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(iconScale, {
+        toValue: active ? 1.12 : 1,
+        useNativeDriver: Platform.OS !== "web",
+        stiffness: 260,
+        damping: 18,
+        mass: 0.7,
+      }),
+      Animated.timing(indicatorOpacity, {
+        toValue: active ? 1 : 0,
+        duration: 180,
+        useNativeDriver: Platform.OS !== "web",
+      }),
+    ]).start();
+  }, [active, iconScale, indicatorOpacity]);
+
   return (
     <Pressable
       style={styles.navItem}
@@ -769,7 +794,7 @@ function NavItem({
       accessibilityRole="button"
       accessibilityLabel={label}
     >
-      <View style={styles.navIconWrapper}>
+      <Animated.View style={[styles.navIconWrapper, { transform: [{ scale: iconScale }] }]}>
         <Text style={[styles.navIcon, { color: active ? colors.accent : colors.muted }]}>
           {icon}
         </Text>
@@ -778,7 +803,7 @@ function NavItem({
             <Text style={styles.badgeText}>{badge > 9 ? "9+" : badge}</Text>
           </View>
         ) : null}
-      </View>
+      </Animated.View>
       <Text
         style={[
           styles.navLabel,
@@ -788,6 +813,16 @@ function NavItem({
       >
         {label}
       </Text>
+      <Animated.View
+        style={[
+          styles.navIndicator,
+          {
+            backgroundColor: colors.accent,
+            opacity: indicatorOpacity,
+            transform: [{ scaleX: indicatorOpacity }],
+          },
+        ]}
+      />
     </Pressable>
   );
 }
@@ -1268,7 +1303,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: 84,
+    height: 78,
     backgroundColor: "#FFF",
     borderTopWidth: 1,
     borderTopColor: "#E8EBE5",
@@ -1281,11 +1316,12 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 12,
   },
-  navItem: { alignItems: "center", minWidth: 52, paddingTop: 4 },
+  navItem: { alignItems: "center", minWidth: 52, paddingTop: 2, minHeight: 52, justifyContent: "center" },
   navIconWrapper: { position: "relative" },
-  navIcon: { fontSize: 22, textAlign: "center" },
+  navIcon: { fontSize: 24, textAlign: "center", fontWeight: "500" },
   navLabel: { fontSize: 10, marginTop: 4, fontWeight: "600" },
   navLabelActive: { fontWeight: "800" },
+  navIndicator: { width: 14, height: 3, borderRadius: 2, marginTop: 4 },
   badge: {
     position: "absolute",
     right: -10,
@@ -1301,20 +1337,18 @@ const styles = StyleSheet.create({
   badgeText: { color: "#FFF", fontSize: 9, fontWeight: "800" },
   sellButton: {
     height: 48,
+    width: 48,
     borderRadius: 24,
     backgroundColor: "#1F5D4C",
-    flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 18,
-    gap: 5,
+    justifyContent: "center",
     shadowColor: "#1F5D4C",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.35,
     shadowRadius: 8,
     elevation: 6,
   },
-  sellPlus: { fontSize: 20, fontWeight: "800" },
-  sellText: { fontWeight: "800", fontSize: 13 },
+  sellPlus: { fontSize: 28, lineHeight: 32, fontWeight: "500" },
 
   // Modals
   backdrop: {
