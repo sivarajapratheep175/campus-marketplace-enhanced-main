@@ -5,7 +5,6 @@ import {
   getRedirectResult,
   onAuthStateChanged,
   setPersistence,
-  signInAnonymously,
   signInWithPopup,
   signInWithRedirect,
   signOut,
@@ -37,6 +36,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { EmptyState } from "./components/EmptyState";
+import { AuthModal } from "./components/AuthModal";
 import { ExplorePage } from "./pages/ExplorePage";
 import { MessagesPage } from "./pages/MessagesPage";
 import { MyListingsPage } from "./pages/MyListingsPage";
@@ -45,6 +45,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SavedPage } from "./pages/SavedPage";
 import { seedListings } from "./data";
 import { auth, db, firebaseConfigured } from "./firebase";
+import { getAuthErrorMessage, signInWithEmail, signUpWithEmail } from "./auth";
 import { createListing, markListingAsSold } from "./listings";
 import { convertToUsd, Currency, fetchUsdToLkrRate, formatPrice } from "./currency";
 import {
@@ -87,6 +88,7 @@ export default function App() {
   const [selected, setSelected] = useState<Listing | null>(null);
   const [user, setUser] = useState<User | null>(auth?.currentUser || null);
   const [authOpen, setAuthOpen] = useState(false);
+  const [pendingTab, setPendingTab] = useState<Tab | null>(null);
   const [sellOpen, setSellOpen] = useState(false);
   const [authError, setAuthError] = useState("");
   const [profileReady, setProfileReady] = useState(false);
@@ -103,7 +105,11 @@ export default function App() {
       setUser(nextUser);
     };
     let unsubscribe: () => void = () => undefined;
-    setPersistence(firebaseAuth, browserLocalPersistence)
+    const persistence =
+      Platform.OS === "web"
+        ? setPersistence(firebaseAuth, browserLocalPersistence)
+        : Promise.resolve();
+    persistence
       .then(() => {
         unsubscribe = onAuthStateChanged(firebaseAuth, handleUser);
         return getRedirectResult(firebaseAuth);
@@ -115,7 +121,7 @@ export default function App() {
         setAuthError(
           error instanceof Error
             ? error.message
-            : "Google sign-in could not be completed.",
+            : "Could not initialize Firebase Authentication.",
         ),
       );
     return () => unsubscribe();
@@ -284,12 +290,36 @@ export default function App() {
         : null,
     [items, selected],
   );
-  const toggleSaved = (id: string) =>
+  const requestSignIn = (destination?: Tab) => {
+    if (destination) setPendingTab(destination);
+    setAuthError("");
+    setAuthOpen(true);
+  };
+  const navigateToTab = (destination: Tab) => {
+    if (!user && destination !== "Explore" && destination !== "Profile") {
+      requestSignIn(destination);
+      return;
+    }
+    setTab(destination);
+  };
+  const completeSignIn = (signedInUser: User) => {
+    setUser(signedInUser);
+    setAuthOpen(false);
+    setAuthError("");
+    setTab(pendingTab || "Explore");
+    setPendingTab(null);
+  };
+  const toggleSaved = (id: string) => {
+    if (!user) {
+      requestSignIn();
+      return;
+    }
     setSavedIds((current) =>
       current.includes(id)
         ? current.filter((value) => value !== id)
         : [...current, id],
     );
+  };
   const changeTheme = async (theme: AppTheme) => {
     try {
       if (user && db) await saveUserSettings(user.uid, { theme });
@@ -390,31 +420,36 @@ export default function App() {
       setPhotoBusy(false);
     }
   };
+  const submitEmailAuth = async (
+    displayName: string,
+    email: string,
+    password: string,
+    isSignUp: boolean,
+  ) => {
+    setAuthError("");
+    try {
+      const signedInUser = isSignUp
+        ? await signUpWithEmail(displayName, email, password)
+        : await signInWithEmail(email, password);
+      completeSignIn(signedInUser);
+    } catch (error) {
+      const message = getAuthErrorMessage(error);
+      setAuthError(message);
+      throw new Error(message);
+    }
+  };
   const signInWithGoogle = async () => {
     if (!auth) {
-      // In demo mode without Firebase credentials, allow signing in as a demo student
-      const demoUser = {
-        uid: "demo-student-1",
-        displayName: "Jordan K.",
-        email: "jordan@campus.edu",
-        photoURL: null,
-      } as unknown as User;
-      setUser(demoUser);
-      setProfileReady(true);
-      setAuthOpen(false);
-      return;
+      throw new Error(
+        "Firebase is not configured. Add your Firebase Web app values to .env and restart Expo.",
+      );
     }
     setAuthError("");
     try {
       await setPersistence(auth, browserLocalPersistence);
-      if (Platform.OS === "web") {
-        const result = await signInWithPopup(auth, new GoogleAuthProvider());
-        setUser(result.user);
-        setAuthOpen(false);
-      } else {
-        await signInAnonymously(auth);
-        setAuthOpen(false);
-      }
+      const result = await signInWithPopup(auth, new GoogleAuthProvider());
+      await ensureUserProfile(result.user);
+      completeSignIn(result.user);
     } catch (error) {
       const code =
         error instanceof Error ? error.message : "Google sign-in failed.";
@@ -425,8 +460,9 @@ export default function App() {
         await signInWithRedirect(auth, new GoogleAuthProvider());
         return;
       }
-      setAuthError(code);
-      Alert.alert("Google sign-in failed", code);
+      const message = getAuthErrorMessage(error);
+      setAuthError(message);
+      throw new Error(message);
     }
   };
 
@@ -444,7 +480,7 @@ export default function App() {
   ) => {
     if (!user) {
       setSellOpen(false);
-      setAuthOpen(true);
+      requestSignIn();
       return;
     }
     const enteredPrice = Number(price);
@@ -508,7 +544,7 @@ export default function App() {
   };
   const markAsSold = async (listingId: string) => {
     if (!user) {
-      setAuthOpen(true);
+      requestSignIn();
       return;
     }
     const targetItem = items.find((item) => item.id === listingId);
@@ -546,7 +582,7 @@ export default function App() {
   };
   const contactSeller = () => {
     if (!user) {
-      setAuthOpen(true);
+      requestSignIn("Messages");
       return;
     }
     setSelected(null);
@@ -614,10 +650,10 @@ export default function App() {
           firebaseConfigured={firebaseConfigured}
           profileReady={profileReady}
           error={authError}
-          onMyListings={() => (user ? setTab("MyListings") : setAuthOpen(true))}
-          onSaved={() => setTab("Saved")}
-          onSignIn={() => setAuthOpen(true)}
-          onSettings={() => setTab("Settings")}
+          onMyListings={() => navigateToTab("MyListings")}
+          onSaved={() => navigateToTab("Saved")}
+          onSignIn={() => requestSignIn()}
+          onSettings={() => navigateToTab("Settings")}
           onUploadPhoto={uploadPhoto}
           onSignOut={() => {
             if (auth) {
@@ -652,8 +688,14 @@ export default function App() {
       <BottomNav
         tab={tab}
         savedCount={savedIds.length}
-        onChange={setTab}
-        onSell={() => setSellOpen(true)}
+        onChange={navigateToTab}
+        onSell={() => {
+          if (!user) {
+            requestSignIn();
+            return;
+          }
+          setSellOpen(true);
+        }}
         colors={colors}
       />
       <ListingModal
@@ -668,9 +710,20 @@ export default function App() {
       />
       <AuthModal
         visible={authOpen}
-        onClose={() => setAuthOpen(false)}
-        onSignIn={signInWithGoogle}
-        error={authError}
+        onClose={() => {
+          setAuthOpen(false);
+          setPendingTab(null);
+          setAuthError("");
+        }}
+        onClearError={() => setAuthError("")}
+        onSubmit={submitEmailAuth}
+        onGoogleSignIn={firebaseConfigured && Platform.OS === "web" ? signInWithGoogle : undefined}
+        error={
+          authError ||
+          (!firebaseConfigured
+            ? "Firebase is not configured. Add the Firebase Web app values to .env and restart Expo."
+            : "")
+        }
         colors={colors}
       />
       <SellModal
@@ -961,44 +1014,6 @@ function ListingModal({
           </View>
         </View>
       )}
-    </Modal>
-  );
-}
-
-// ─── Auth Modal ───────────────────────────────────────────────────────────────
-
-function AuthModal({
-  visible,
-  onClose,
-  onSignIn,
-  error,
-  colors,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onSignIn: () => Promise<void>;
-  error: string;
-  colors: ThemeColors;
-}) {
-  return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.backdrop}>
-        <View style={[styles.auth, { backgroundColor: colors.surface }]}>
-          <Text style={[styles.formTitle, { color: colors.text }]}>Welcome to campus marketplace</Text>
-          <Text style={[styles.authMessage, { color: colors.muted }]}>
-            Sign in to save listings, message sellers, and publish your own
-            items.
-          </Text>
-          {error ? <Text style={styles.authError}>{error}</Text> : null}
-          <Pressable style={[styles.googleButton, { borderColor: colors.border }]} onPress={onSignIn}>
-            <Text style={styles.googleMark}>G</Text>
-            <Text style={[styles.outlineText, { color: colors.accent }]}>Continue with Google</Text>
-          </Pressable>
-          <Pressable style={[styles.outline, { borderColor: colors.border }]} onPress={onClose}>
-            <Text style={[styles.outlineText, { color: colors.accent }]}>Maybe later</Text>
-          </Pressable>
-        </View>
-      </View>
     </Modal>
   );
 }

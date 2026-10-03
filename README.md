@@ -17,10 +17,12 @@ Fill the Firebase Web app values in `.env`. The app runs in demo mode while they
 ## Firebase setup
 
 1. Create a Firebase project and register a Web app.
-2. Enable Google Authentication under Authentication > Sign-in method. Anonymous Authentication remains available for native fallback.
+2. Under Authentication > Sign-in method, enable Email/Password. Google sign-in is also available on web when enabled in the same section.
 3. Create a Cloud Firestore database and a Firebase Storage bucket.
-4. Copy `.env.example` to `.env` and set the Firebase web configuration values.
+4. Copy `.env.example` to `.env` and set the Firebase Web app configuration values. Restart Expo after changing `.env`.
 5. Sign in to the Firebase CLI with `npx firebase-tools login`, then deploy the Firestore and Storage rules from the project directory with `npx firebase-tools deploy --only firestore:rules,storage --project YOUR_FIREBASE_PROJECT_ID`. On Windows PowerShell, use `npx.cmd` instead of `npx` if script execution blocks it.
+
+`firebase-config.js` reads the `EXPO_PUBLIC_FIREBASE_*` values from `.env` and initializes Firebase in `src/firebase.ts`. Users can create an account with their name, email, and a password of at least six characters, or sign in with an existing email/password account.
 
 The application uses:
 
@@ -37,7 +39,7 @@ The client Firebase configuration is intentionally public. Access control belong
 ## Current product flows
 
 - Explore listings with search, category filters, currency-aware price thresholds, and sorting.
-- Browse and search without signing in; sign-in is required to contact sellers or publish listings.
+- Browse and search without signing in; sign-in is required to save listings, message sellers, view saved items and personal listings, adjust account settings, or publish listings.
 - Save listings and open listing details.
 - Publish a listing using the selected display currency.
 - Mark an owned, available listing as sold; transaction and Firestore Rules checks prevent unauthorized or duplicate transitions.
