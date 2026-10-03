@@ -27,7 +27,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -35,6 +34,7 @@ import {
   View,
   ActivityIndicator,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "./components/EmptyState";
 import { AuthModal } from "./components/AuthModal";
 import { ExplorePage } from "./pages/ExplorePage";
@@ -85,6 +85,14 @@ const SELL_CATEGORIES = [
 const CONDITION_OPTIONS = ["Like New", "Good condition", "Fair", "For Parts"];
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <MarketplaceApp />
+    </SafeAreaProvider>
+  );
+}
+
+function MarketplaceApp() {
   const [tab, setTab] = useState<Tab>("Explore");
   const [items, setItems] = useState<Listing[]>(db ? [] : seedListings);
   const [queryText, setQueryText] = useState("");
@@ -445,9 +453,6 @@ export default function App() {
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
         base64: true,
       });
       if (result.canceled) return;
@@ -1229,9 +1234,6 @@ function SellModal({
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.75,
         base64: true,
       });
       if (result.canceled) return;
