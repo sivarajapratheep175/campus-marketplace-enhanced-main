@@ -35,7 +35,7 @@ export function SettingsPage({
         { backgroundColor: colors.background },
       ]}
     >
-      <Pressable onPress={onBack} style={styles.back}>
+      <Pressable onPress={onBack} style={styles.back} accessibilityRole="button" accessibilityLabel="Go to Profile">
         <Text style={[styles.backText, { color: colors.accent }]}>‹ Profile</Text>
       </Pressable>
       <PageTitle
@@ -51,7 +51,7 @@ export function SettingsPage({
           <Image source={{ uri: photoURL }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarFallback, { backgroundColor: colors.accentSoft }]}>
-            <Text style={[styles.avatarText, { color: colors.accent }]}>?</Text>
+            <Text style={[styles.avatarText, { color: colors.accent }]}>P</Text>
           </View>
         )}
         <View style={styles.photoDescription}>

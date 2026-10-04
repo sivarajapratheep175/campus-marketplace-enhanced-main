@@ -26,11 +26,12 @@ Fill the Firebase Web app values in `.env`. Browsing can use demo listings while
 
 The application uses:
 
-- `listings`: public reads; authenticated sellers can create listings with a positive USD base price and `available` status. A seller may transition a listing once from `available` to `sold`.
-- `users/{uid}`: owner-only profile document containing `uid`, `displayName`, `email`, `photoURL`, `campus`, `settings`, and timestamps. Web sign-ups also store `phoneNumber`, `phoneVerificationRequired`, and `phoneVerified` to resume incomplete SMS verification.
+- `listings`: public reads; only the authenticated seller can create, edit, delete, or change the status of their listing. Prices use USD as the canonical currency; optional special offers are stored on the listing and include an original price, offer price, title, optional details, and optional expiry.
+- `users/{uid}`: owner-only profile document containing `uid`, unique `username`, `displayName`, `email`, `photoURL`, `campus`, `settings`, and timestamps. Web sign-ups also store `phoneNumber`, `phoneVerificationRequired`, and `phoneVerified` to resume incomplete SMS verification.
+- `publicProfiles/{uid}` and `usernames/{username}`: authenticated-readable, limited profile data used to resolve usernames and show conversation avatars without exposing private account fields.
 - `users/{uid}/saved/{listingId}`: owner-only saved listing data.
-- `users/{uid}/profile/{fileName}` in Storage: profile images written by their owner; uploads must be images smaller than 5 MB.
-- `conversations`: members-only access, with messages in a subcollection.
+- `users/{uid}/profile/{fileName}` and `listings/{uid}/{listingId}/{fileName}` in Storage: profile and listing images writable only by their owner, with image type and size limits.
+- `conversations/{conversationId}`: two-member conversations readable only by their members; immutable-sender messages live in a subcollection and update in real time.
 
 Profile settings are stored at `users/{uid}.settings` and contain the selected `theme` (`light` or `dark`) and `currency` (`USD` or `LKR`). USD is the canonical listing-price currency. When LKR is selected, the app obtains a live USD/LKR rate and caches the latest successful rate in the user's settings for offline display. Existing user documents receive missing profile defaults on their next sign-in without overwriting their saved profile or preferences.
 
@@ -38,10 +39,12 @@ The client Firebase configuration is intentionally public. Access control belong
 
 ## Current product flows
 
-- Explore listings with search, category filters, currency-aware price thresholds, and sorting.
+- Explore listings with search, category filters, manually entered minimum/maximum prices in the selected currency, and sorting.
 - Browse and search without signing in; sign-in is required to save listings, message sellers, view saved items and personal listings, adjust account settings, or publish listings.
 - Save listings and open listing details.
-- Publish a listing using the selected display currency.
-- Mark an owned, available listing as sold; transaction and Firestore Rules checks prevent unauthorized or duplicate transitions.
+- Publish and edit a listing using the selected display currency, manage its image, and attach an optional special offer.
+- Mark an owned listing sold out or make it available again; transaction and Firestore Rules checks restrict status changes to the listing owner.
+- Find users by unique username, start private one-to-one conversations, and exchange real-time messages.
+- Browse active, unexpired special offers in the Offers section.
 - Update profile photo, theme, and currency in Settings.
 - View Saved, Messages, Profile, My listings, and Settings pages.

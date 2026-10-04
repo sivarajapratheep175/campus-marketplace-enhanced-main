@@ -14,10 +14,12 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import {
   collection,
+  deleteDoc,
   doc,
   onSnapshot,
   orderBy,
   query,
+  setDoc,
 } from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -39,6 +41,7 @@ import { EmptyState } from "./components/EmptyState";
 import { AuthModal } from "./components/AuthModal";
 import { ExplorePage } from "./pages/ExplorePage";
 import { MessagesPage } from "./pages/MessagesPage";
+import { OffersPage } from "./pages/OffersPage";
 import { MyListingsPage } from "./pages/MyListingsPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -54,7 +57,7 @@ import {
   signInWithEmail,
   signUpWithEmail,
 } from "./auth";
-import { createListing, markListingAsSold } from "./listings";
+import { createListing, updateListing, updateListingStatus } from "./listings";
 import { convertToUsd, Currency, fetchUsdToLkrRate, formatPrice } from "./currency";
 import {
   loadLocalUserSettings,
@@ -107,14 +110,23 @@ function MarketplaceApp() {
   const [pendingTab, setPendingTab] = useState<Tab | null>(null);
   const [pendingPhoneNumber, setPendingPhoneNumber] = useState<string | null>(null);
   const [sellOpen, setSellOpen] = useState(false);
+  const [editingListing, setEditingListing] = useState<Listing | null>(null);
   const [authError, setAuthError] = useState("");
   const [profileReady, setProfileReady] = useState(false);
   const [settings, setSettings] = useState<UserSettings>(loadLocalUserSettings);
   const [profilePhotoURL, setProfilePhotoURL] = useState<string | null>(null);
+  const [profileUsername, setProfileUsername] = useState("");
+  const [startConversationUserId, setStartConversationUserId] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [exchangeRateError, setExchangeRateError] = useState("");
+  const [offerClock, setOfferClock] = useState(Date.now());
   const authFlowPending = useRef(false);
   const colors = themeColors[settings.theme];
+
+  useEffect(() => {
+    const timer = setInterval(() => setOfferClock(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const firebaseAuth = auth;
@@ -189,6 +201,7 @@ function MarketplaceApp() {
     if (!user) {
       setProfileReady(false);
       setProfilePhotoURL(null);
+      setProfileUsername("");
       setSettings(loadLocalUserSettings());
       return;
     }
@@ -213,6 +226,7 @@ function MarketplaceApp() {
             setProfilePhotoURL(
               typeof data.photoURL === "string" ? data.photoURL : user.photoURL,
             );
+            setProfileUsername(typeof data.username === "string" ? data.username : "");
             const loadedSettings = parseUserSettings(data.settings);
             setSettings(loadedSettings);
             saveLocalUserSettings(loadedSettings);
@@ -290,7 +304,7 @@ function MarketplaceApp() {
       (snapshot) =>
         setItems(
           snapshot.docs.map(
-            (entry) => ({ id: entry.id, ...entry.data() }) as Listing,
+            (entry) =>             ({ ...entry.data(), id: entry.id }) as Listing,
           ),
         ),
       (error) =>
@@ -302,6 +316,18 @@ function MarketplaceApp() {
     );
   }, []);
 
+  useEffect(() => {
+    if (!user || !db) {
+      setSavedIds([]);
+      return;
+    }
+    return onSnapshot(
+      collection(db, "users", user.uid, "saved"),
+      (snapshot) => setSavedIds(snapshot.docs.map((entry) => entry.id)),
+      (error) => setAuthError(error.message || "Could not load saved listings."),
+    );
+  }, [user]);
+
   const filteredItems = useMemo(() => {
     const q = queryText.trim().toLowerCase();
     const result = items.filter((item) => {
@@ -310,7 +336,9 @@ function MarketplaceApp() {
       if (!matchesCategory) return false;
 
       const matchesPrice =
-        item.price >= minPrice && (maxPrice === null || item.price <= maxPrice);
+        (maxPrice === null || minPrice <= maxPrice) &&
+        item.price >= minPrice &&
+        (maxPrice === null || item.price <= maxPrice);
       if (!matchesPrice) return false;
 
       if (!q) return true;
@@ -341,6 +369,14 @@ function MarketplaceApp() {
     () => (user ? items.filter((item) => item.sellerId === user.uid) : []),
     [items, user],
   );
+  const activeOffers = useMemo(
+    () =>
+      items.filter((item) => {
+        if (item.status === "sold" || !item.offer) return false;
+        return !item.offer.expiresAt || Date.parse(item.offer.expiresAt) > offerClock;
+      }),
+    [items, offerClock],
+  );
   const selectedItem = useMemo(
     () =>
       selected
@@ -353,8 +389,13 @@ function MarketplaceApp() {
     setAuthError("");
     setAuthOpen(true);
   };
+  const editListing = (listing: Listing) => {
+    setEditingListing(listing);
+    setSelected(null);
+    setSellOpen(true);
+  };
   const navigateToTab = (destination: Tab) => {
-    if (!user && destination !== "Explore" && destination !== "Profile") {
+    if (!user && destination !== "Explore" && destination !== "Profile" && destination !== "Offers") {
       requestSignIn(destination);
       return;
     }
@@ -377,11 +418,21 @@ function MarketplaceApp() {
       requestSignIn();
       return;
     }
-    setSavedIds((current) =>
-      current.includes(id)
-        ? current.filter((value) => value !== id)
-        : [...current, id],
-    );
+    const isSaved = savedIds.includes(id);
+    if (!db) {
+      setSavedIds((current) =>
+        isSaved ? current.filter((value) => value !== id) : [...current, id],
+      );
+      return;
+    }
+    const savedRef = doc(db, "users", user.uid, "saved", id);
+    (isSaved ? deleteDoc(savedRef) : setDoc(savedRef, { listingId: id }))
+      .catch((error: unknown) =>
+        Alert.alert(
+          "Could not update saved items",
+          error instanceof Error ? error.message : "Please try again.",
+        ),
+      );
   };
   const changeTheme = async (theme: AppTheme) => {
     try {
@@ -609,16 +660,31 @@ function MarketplaceApp() {
     condition: string,
     imageBase64?: string,
     imageMimeType?: string,
-  ) => {
+    offerInput?: {
+      title: string;
+      offerPrice: string;
+      discountPercent: string;
+      description: string;
+      expiresAt: string;
+    },
+  ): Promise<boolean> => {
     if (!user) {
       setSellOpen(false);
       requestSignIn();
-      return;
+      return false;
+    }
+    if (editingListing && editingListing.sellerId !== user.uid) {
+      Alert.alert("Permission denied", "Only the owner of this listing can edit it.");
+      return false;
     }
     const enteredPrice = Number(price);
     if (!title.trim() || !Number.isFinite(enteredPrice) || enteredPrice <= 0) {
       Alert.alert("Check listing details", "Enter a title and a price greater than zero.");
-      return;
+      return false;
+    }
+    if (title.trim().length > 100 || description.trim().length > 2000) {
+      Alert.alert("Check listing details", "Titles must be 100 characters or fewer and descriptions 2,000 characters or fewer.");
+      return false;
     }
     let priceInUsd: number;
     try {
@@ -628,12 +694,71 @@ function MarketplaceApp() {
         "Could not convert price",
         error instanceof Error ? error.message : "Please try again.",
       );
-      return;
+      return false;
     }
-    const tempId = String(Date.now());
-    let imageUrl = seedListings[0].image; // default placeholder
+    const tempId = editingListing?.id || String(Date.now());
+    let imageUrl = editingListing?.image || seedListings[0].image;
 
-    // Upload listing image if provided
+    let offer: Listing["offer"];
+    if (offerInput?.title.trim()) {
+      if (offerInput.title.trim().length > 100 || offerInput.description.trim().length > 2000) {
+        Alert.alert("Check special offer", "Offer titles must be 100 characters or fewer and descriptions 2,000 characters or fewer.");
+        return false;
+      }
+      const enteredOfferPrice = Number(offerInput.offerPrice);
+      const discount = Number(offerInput.discountPercent);
+      const hasPrice = offerInput.offerPrice.trim().length > 0;
+      const hasDiscount = offerInput.discountPercent.trim().length > 0;
+      if (!hasPrice && !hasDiscount) {
+        Alert.alert("Check special offer", "Enter an offer price or discount percentage.");
+        return false;
+      }
+      if (hasDiscount && (!Number.isFinite(discount) || discount <= 0 || discount >= 100)) {
+        Alert.alert("Check special offer", "Discount must be greater than 0% and less than 100%.");
+        return false;
+      }
+      if (hasPrice && (!Number.isFinite(enteredOfferPrice) || enteredOfferPrice <= 0 || enteredOfferPrice >= enteredPrice)) {
+        Alert.alert("Check special offer", "Offer price must be greater than zero and below the original price.");
+        return false;
+      }
+      if (offerInput.expiresAt.trim() && !/^\d{4}-\d{2}-\d{2}$/.test(offerInput.expiresAt.trim())) {
+        Alert.alert("Check offer expiry", "Enter a date in YYYY-MM-DD format.");
+        return false;
+      }
+      const parsedExpiry = offerInput.expiresAt.trim()
+        ? new Date(`${offerInput.expiresAt.trim()}T23:59:59.999Z`)
+        : null;
+      if (
+        parsedExpiry &&
+        (!Number.isFinite(parsedExpiry.getTime()) ||
+          parsedExpiry.toISOString().slice(0, 10) !== offerInput.expiresAt.trim() ||
+          parsedExpiry.getTime() <= Date.now())
+      ) {
+        Alert.alert("Check offer expiry", "Offer expiry must be a future date.");
+        return false;
+      }
+      const offerDisplayPrice = hasPrice
+        ? enteredOfferPrice
+        : enteredPrice * (1 - discount / 100);
+      let offerPriceUsd: number;
+      try {
+        offerPriceUsd = convertToUsd(offerDisplayPrice, settings.currency, settings.exchangeRate);
+      } catch (error) {
+        Alert.alert("Could not convert offer price", error instanceof Error ? error.message : "Please try again.");
+        return false;
+      }
+      offer = {
+        title: offerInput.title.trim(),
+        originalPrice: priceInUsd,
+        offerPrice: offerPriceUsd,
+        ...(offerInput.description.trim() ? { description: offerInput.description.trim() } : {}),
+        ...(parsedExpiry ? { expiresAt: parsedExpiry.toISOString() } : {}),
+      };
+    } else if (offerInput && (offerInput.offerPrice.trim() || offerInput.discountPercent.trim())) {
+      Alert.alert("Check special offer", "Add an offer title or clear the offer price and discount.");
+      return false;
+    }
+
     if (imageBase64) {
       try {
         imageUrl = await saveListingPhoto(
@@ -642,8 +767,12 @@ function MarketplaceApp() {
           imageBase64,
           imageMimeType || "image/jpeg",
         );
-      } catch {
-        // Non-fatal — continue with placeholder image
+      } catch (error) {
+        Alert.alert(
+          "Could not upload product photo",
+          error instanceof Error ? error.message : "Please try again.",
+        );
+        return false;
       }
     }
 
@@ -658,23 +787,34 @@ function MarketplaceApp() {
       condition: condition || "Good condition",
       image: imageUrl,
       description: description.trim() || "New listing from a campus seller.",
-      status: "available",
+      status: editingListing?.status || "available",
+      ...(offer ? { offer } : {}),
     };
     try {
-      if (db) {
+      if (db && editingListing) {
+        await updateListing(newListing);
+      } else if (db) {
         newListing.id = await createListing(newListing);
       } else {
-        setItems((prev) => [newListing, ...prev]);
+        setItems((prev) =>
+          editingListing
+            ? prev.map((item) => item.id === editingListing.id ? newListing : item)
+            : [newListing, ...prev],
+        );
       }
       setSellOpen(false);
+      setEditingListing(null);
+      setSelected(null);
+      return true;
     } catch (error) {
       Alert.alert(
-        "Could not publish listing",
+        editingListing ? "Could not update listing" : "Could not publish listing",
         error instanceof Error ? error.message : "Please try again.",
       );
+      return false;
     }
   };
-  const markAsSold = async (listingId: string) => {
+  const changeListingStatus = async (listingId: string, status: "available" | "sold") => {
     if (!user) {
       requestSignIn();
       return;
@@ -689,23 +829,23 @@ function MarketplaceApp() {
       );
       return;
     }
-    if (targetItem.status === "sold") {
-      Alert.alert("Already sold", "This listing is already marked as sold.");
+    if (targetItem.status === status) {
+      Alert.alert("Status unchanged", `This listing is already ${status === "sold" ? "sold out" : "available"}.`);
       return;
     }
 
     try {
-      await markListingAsSold(listingId, user.uid);
+      if (db) await updateListingStatus(listingId, user.uid, status);
 
       setItems((prev) =>
         prev.map((item) =>
-          item.id === listingId ? { ...item, status: "sold" } : item
+          item.id === listingId ? { ...item, status } : item
         )
       );
       setSelected((prev) =>
-        prev && prev.id === listingId ? { ...prev, status: "sold" } : prev
+        prev && prev.id === listingId ? { ...prev, status } : prev
       );
-      Alert.alert("Item Sold", "Your listing has been successfully marked as sold.");
+      Alert.alert("Listing updated", `The item is now ${status === "sold" ? "sold out" : "available"}.`);
     } catch (error) {
       const msg =
         error instanceof Error ? error.message : "Could not update listing.";
@@ -713,6 +853,8 @@ function MarketplaceApp() {
     }
   };
   const contactSeller = () => {
+    const sellerId = selected?.sellerId;
+    if (sellerId) setStartConversationUserId(sellerId);
     if (!user) {
       requestSignIn("Messages");
       return;
@@ -759,7 +901,39 @@ function MarketplaceApp() {
         />
       )}
       {tab === "Messages" && (
-        <MessagesPage onBrowse={() => setTab("Explore")} colors={colors} />
+        user && profileReady ? (
+          <MessagesPage
+            user={user}
+            username={profileUsername}
+            photoURL={profilePhotoURL}
+            startWithUserId={startConversationUserId}
+            onStartHandled={() => setStartConversationUserId(null)}
+            onBrowse={() => setTab("Explore")}
+            colors={colors}
+          />
+        ) : user ? (
+          <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.background }}>
+            <ActivityIndicator color={colors.accent} />
+            <Text style={{ color: colors.muted, marginTop: 10 }}>Loading your private inbox…</Text>
+          </View>
+        ) : (
+          <EmptyState
+            colors={colors}
+            title="Sign in to view messages"
+            message="Your conversations are private to your account."
+            action="Sign in"
+            onAction={() => requestSignIn("Messages")}
+          />
+        )
+      )}
+      {tab === "Offers" && (
+        <OffersPage
+          items={activeOffers}
+          currency={settings.currency}
+          exchangeRate={settings.exchangeRate}
+          colors={colors}
+          onOpen={setSelected}
+        />
       )}
       {tab === "MyListings" && (
         <MyListingsPage
@@ -775,6 +949,7 @@ function MarketplaceApp() {
         <ProfilePage
           user={user}
           photoURL={profilePhotoURL}
+          username={profileUsername}
           photoBusy={photoBusy}
           colors={colors}
           savedCount={savedIds.length}
@@ -835,7 +1010,8 @@ function MarketplaceApp() {
         user={user}
         onClose={() => setSelected(null)}
         onContact={contactSeller}
-        onMarkAsSold={markAsSold}
+        onStatusChange={changeListingStatus}
+        onEdit={editListing}
         currency={settings.currency}
         exchangeRate={settings.exchangeRate}
         colors={colors}
@@ -877,7 +1053,11 @@ function MarketplaceApp() {
       />
       <SellModal
         visible={sellOpen}
-        onClose={() => setSellOpen(false)}
+        editingListing={editingListing}
+        onClose={() => {
+          setSellOpen(false);
+          setEditingListing(null);
+        }}
         onSubmit={publish}
         currency={settings.currency}
         exchangeRate={settings.exchangeRate}
@@ -926,6 +1106,13 @@ function BottomNav({
         active={tab === "Saved"}
         badge={savedCount}
         onPress={() => onChange("Saved")}
+        colors={colors}
+      />
+      <NavItem
+        label="Offers"
+        icon="％"
+        active={tab === "Offers"}
+        onPress={() => onChange("Offers")}
         colors={colors}
       />
       {/* Centre sell button */}
@@ -1036,7 +1223,8 @@ function ListingModal({
   user,
   onClose,
   onContact,
-  onMarkAsSold,
+  onStatusChange,
+  onEdit,
   currency,
   exchangeRate,
   colors,
@@ -1045,34 +1233,38 @@ function ListingModal({
   user: User | null;
   onClose: () => void;
   onContact: () => void;
-  onMarkAsSold: (id: string) => void;
+  onStatusChange: (id: string, status: "available" | "sold") => void;
+  onEdit: (item: Listing) => void;
   currency: Currency;
   exchangeRate?: number;
   colors: ThemeColors;
 }) {
   const isOwner = Boolean(user && item?.sellerId && user.uid === item.sellerId);
   const isSold = item?.status === "sold";
+  const nextStatus = isSold ? "available" : "sold";
 
-  const handleConfirmMarkSold = () => {
+  const handleConfirmStatusChange = () => {
     if (!item) return;
+    const action = isSold ? "make this item available again" : "mark this item as sold out";
+    const applyStatus = () => onStatusChange(item.id, nextStatus);
     if (
       Platform.OS === "web" &&
       typeof window !== "undefined" &&
       window.confirm
     ) {
-      if (window.confirm("Are you sure you want to mark this item as sold?")) {
-        onMarkAsSold(item.id);
+      if (window.confirm(`Are you sure you want to ${action}?`)) {
+        applyStatus();
       }
     } else {
       Alert.alert(
-        "Mark as Sold",
-        "Are you sure you want to mark this item as sold?",
+        isSold ? "Make Available" : "Mark as Sold Out",
+        `Are you sure you want to ${action}?`,
         [
           { text: "Cancel", style: "cancel" },
           {
-            text: "Mark as Sold",
+            text: isSold ? "Make Available" : "Mark as Sold Out",
             style: "destructive",
-            onPress: () => onMarkAsSold(item.id),
+            onPress: applyStatus,
           },
         ],
       );
@@ -1093,7 +1285,7 @@ function ListingModal({
               <Image source={{ uri: item.image }} style={styles.detailImage} />
               {isSold && (
                 <View style={styles.modalSoldBadge}>
-                  <Text style={styles.modalSoldBadgeText}>SOLD</Text>
+                  <Text style={styles.modalSoldBadgeText}>SOLD OUT</Text>
                 </View>
               )}
               <Pressable style={[styles.close, { backgroundColor: colors.surface }]} onPress={onClose}>
@@ -1107,11 +1299,25 @@ function ListingModal({
                 </Text>
                 {isSold && (
                   <View style={styles.soldInlineTag}>
-                    <Text style={styles.soldInlineTagText}>SOLD</Text>
+                    <Text style={styles.soldInlineTagText}>SOLD OUT</Text>
                   </View>
                 )}
               </View>
               <Text style={[styles.detailTitle, { color: colors.text }]}>{item.title}</Text>
+              {item.offer && (
+                <View style={[styles.offerDetail, { backgroundColor: colors.accentSoft }]}>
+                  <Text style={[styles.offerDetailTitle, { color: colors.accent }]}>{item.offer.title}</Text>
+                  <Text style={[styles.offerDetailPrice, { color: colors.accent }]}>
+                    {formatPrice(item.offer.offerPrice, currency, exchangeRate)}{" "}
+                    <Text style={styles.offerOriginal}>{formatPrice(item.offer.originalPrice, currency, exchangeRate)}</Text>
+                  </Text>
+                  <Text style={[styles.offerDetailMeta, { color: colors.muted }]}>
+                    {Math.round((1 - item.offer.offerPrice / item.offer.originalPrice) * 100)}% off
+                    {item.offer.expiresAt ? ` · Until ${new Date(item.offer.expiresAt).toLocaleDateString()}` : ""}
+                  </Text>
+                  {item.offer.description ? <Text style={[styles.offerDetailMeta, { color: colors.muted }]}>{item.offer.description}</Text> : null}
+                </View>
+              )}
               <Text
                 style={[
                   styles.detailPrice,
@@ -1119,7 +1325,7 @@ function ListingModal({
                   isSold && styles.detailPriceSold,
                 ]}
               >
-                {formatPrice(item.price, currency, exchangeRate)}
+                {formatPrice(item.offer?.offerPrice ?? item.price, currency, exchangeRate)}
               </Text>
               <Text style={[styles.muted, { color: colors.muted }]}>
                 {item.condition} · {item.campus} · {item.seller}
@@ -1128,26 +1334,31 @@ function ListingModal({
 
               {/* Action buttons */}
               {isOwner ? (
-                isSold ? (
-                  <View style={[styles.soldNoticeBox, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
-                    <Text style={[styles.soldNoticeText, { color: colors.text }]}>
-                      ✓ You have marked this item as sold
-                    </Text>
-                  </View>
-                ) : (
+                <>
+                  <Pressable
+                    style={[styles.editListingButton, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}
+                    onPress={() => onEdit(item)}
+                  >
+                    <Text style={[styles.editListingText, { color: colors.accent }]}>Edit listing</Text>
+                  </Pressable>
                   <Pressable
                     style={[styles.markSoldButton, { backgroundColor: colors.accent, borderColor: colors.accent }]}
-                    onPress={handleConfirmMarkSold}
+                    onPress={handleConfirmStatusChange}
                   >
                     <Text style={[styles.markSoldButtonText, { color: colors.accentText }]}>
-                      ✓ Mark as Sold
+                      {isSold ? "↻ Make Available" : "✓ Mark as Sold Out"}
                     </Text>
                   </Pressable>
-                )
+                  {isSold && (
+                    <View style={[styles.soldNoticeBox, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+                      <Text style={[styles.soldNoticeText, { color: colors.text }]}>This item is sold out to buyers.</Text>
+                    </View>
+                  )}
+                </>
               ) : isSold ? (
                 <View style={[styles.soldNoticeBox, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
                   <Text style={[styles.soldNoticeText, { color: colors.text }]}>
-                    This item has been sold
+                    This item is sold out
                   </Text>
                 </View>
               ) : (
@@ -1171,6 +1382,7 @@ function ListingModal({
 
 function SellModal({
   visible,
+  editingListing,
   onClose,
   onSubmit,
   currency,
@@ -1178,6 +1390,7 @@ function SellModal({
   colors,
 }: {
   visible: boolean;
+  editingListing: Listing | null;
   onClose: () => void;
   onSubmit: (
     title: string,
@@ -1187,7 +1400,14 @@ function SellModal({
     condition: string,
     imageBase64?: string,
     imageMimeType?: string,
-  ) => Promise<void>;
+    offer?: {
+      title: string;
+      offerPrice: string;
+      discountPercent: string;
+      description: string;
+      expiresAt: string;
+    },
+  ) => Promise<boolean>;
   currency: Currency;
   exchangeRate?: number;
   colors: ThemeColors;
@@ -1202,8 +1422,55 @@ function SellModal({
   const [imageMimeType, setImageMimeType] = useState<string | undefined>(undefined);
   const [imagePickBusy, setImagePickBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [offerEnabled, setOfferEnabled] = useState(false);
+  const [offerTitle, setOfferTitle] = useState("");
+  const [offerPrice, setOfferPrice] = useState("");
+  const [discountPercent, setDiscountPercent] = useState("");
+  const [offerDescription, setOfferDescription] = useState("");
+  const [offerExpiry, setOfferExpiry] = useState("");
 
   const validPrice = Number.isFinite(Number(price)) && Number(price) > 0;
+  const validOffer =
+    !offerEnabled ||
+    (offerTitle.trim().length > 0 &&
+      ((offerPrice.trim().length > 0 &&
+        Number.isFinite(Number(offerPrice)) &&
+        Number(offerPrice) > 0 &&
+        Number(offerPrice) < Number(price)) ||
+        (offerPrice.trim().length === 0 &&
+          Number.isFinite(Number(discountPercent)) &&
+          Number(discountPercent) > 0 &&
+          Number(discountPercent) < 100)));
+
+  useEffect(() => {
+    if (!visible) return;
+    if (!editingListing) {
+      resetForm();
+      return;
+    }
+    const displayPrice = (usd: number) =>
+      currency === "LKR" ? usd * (exchangeRate || 1) : usd;
+    setTitle(editingListing.title);
+    setPrice(String(displayPrice(editingListing.price)));
+    setCategory(editingListing.category);
+    setDescription(editingListing.description || "");
+    setCondition(editingListing.condition);
+    setImageUri(editingListing.image);
+    setImageBase64(undefined);
+    setImageMimeType(undefined);
+    setOfferEnabled(Boolean(editingListing.offer));
+    setOfferTitle(editingListing.offer?.title || "");
+    setOfferPrice(
+      editingListing.offer ? String(displayPrice(editingListing.offer.offerPrice)) : "",
+    );
+    setDiscountPercent(
+      editingListing.offer
+        ? String(Math.round((1 - editingListing.offer.offerPrice / editingListing.offer.originalPrice) * 100))
+        : "",
+    );
+    setOfferDescription(editingListing.offer?.description || "");
+    setOfferExpiry(editingListing.offer?.expiresAt?.slice(0, 10) || "");
+  }, [visible, editingListing?.id, currency, exchangeRate]);
 
   const resetForm = () => {
     setTitle("");
@@ -1215,6 +1482,12 @@ function SellModal({
     setImageBase64(undefined);
     setImageMimeType(undefined);
     setSubmitting(false);
+    setOfferEnabled(false);
+    setOfferTitle("");
+    setOfferPrice("");
+    setDiscountPercent("");
+    setOfferDescription("");
+    setOfferExpiry("");
   };
 
   const handleClose = () => {
@@ -1257,8 +1530,25 @@ function SellModal({
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
-      await onSubmit(title, price, category, description, condition, imageBase64, imageMimeType);
-      resetForm();
+      const success = await onSubmit(
+        title,
+        price,
+        category,
+        description,
+        condition,
+        imageBase64,
+        imageMimeType,
+        offerEnabled
+          ? {
+              title: offerTitle,
+              offerPrice,
+              discountPercent,
+              description: offerDescription,
+              expiresAt: offerExpiry,
+            }
+          : undefined,
+      );
+      if (success) resetForm();
     } finally {
       setSubmitting(false);
     }
@@ -1275,7 +1565,9 @@ function SellModal({
         >
           {/* Header */}
           <View style={styles.formHeader}>
-            <Text style={[styles.formTitle, { color: colors.text }]}>Sell an item</Text>
+            <Text style={[styles.formTitle, { color: colors.text }]}>
+              {editingListing ? "Edit listing" : "Sell an item"}
+            </Text>
             <Pressable onPress={handleClose} hitSlop={8}>
               <Text style={[styles.closeText, { color: colors.text }]}>×</Text>
             </Pressable>
@@ -1349,6 +1641,69 @@ function SellModal({
               { backgroundColor: colors.input, borderColor: colors.border, color: colors.text },
             ]}
           />
+
+          <Pressable
+            onPress={() => setOfferEnabled((enabled) => !enabled)}
+            style={[styles.offerToggle, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: offerEnabled }}
+          >
+            <Text style={[styles.offerToggleMark, { color: colors.accent }]}>{offerEnabled ? "✓" : "＋"}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.offerToggleTitle, { color: colors.text }]}>Add a special offer</Text>
+              <Text style={[styles.offerToggleHint, { color: colors.muted }]}>Show a limited discount in Offers</Text>
+            </View>
+          </Pressable>
+          {offerEnabled && (
+            <View style={[styles.offerForm, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+              <Text style={[styles.label, { color: colors.text, marginTop: 0 }]}>Offer title</Text>
+              <TextInput
+                value={offerTitle}
+                onChangeText={setOfferTitle}
+                placeholder="e.g. Back-to-campus deal"
+                placeholderTextColor={colors.muted}
+                style={[styles.field, { backgroundColor: colors.input, borderColor: colors.border, color: colors.text }]}
+              />
+              <Text style={[styles.label, { color: colors.text }]}>Offer price ({currency}) — or discount %</Text>
+              <View style={styles.offerInputs}>
+                <TextInput
+                  value={offerPrice}
+                  onChangeText={setOfferPrice}
+                  keyboardType="decimal-pad"
+                  placeholder="Offer price"
+                  placeholderTextColor={colors.muted}
+                  style={[styles.field, styles.offerInput, { backgroundColor: colors.input, borderColor: colors.border, color: colors.text }]}
+                />
+                <TextInput
+                  value={discountPercent}
+                  onChangeText={setDiscountPercent}
+                  keyboardType="decimal-pad"
+                  placeholder="Discount %"
+                  placeholderTextColor={colors.muted}
+                  style={[styles.field, styles.offerInput, { backgroundColor: colors.input, borderColor: colors.border, color: colors.text }]}
+                />
+              </View>
+              <Text style={[styles.currencyHint, { color: colors.muted }]}>If both are entered, offer price is used; original listing price is saved separately.</Text>
+              <Text style={[styles.label, { color: colors.text }]}>Offer description (optional)</Text>
+              <TextInput
+                value={offerDescription}
+                onChangeText={setOfferDescription}
+                placeholder="Details about this special price"
+                placeholderTextColor={colors.muted}
+                multiline
+                style={[styles.fieldMulti, { backgroundColor: colors.input, borderColor: colors.border, color: colors.text }]}
+              />
+              <Text style={[styles.label, { color: colors.text }]}>Valid until (optional)</Text>
+              <TextInput
+                value={offerExpiry}
+                onChangeText={setOfferExpiry}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={colors.muted}
+                style={[styles.field, { backgroundColor: colors.input, borderColor: colors.border, color: colors.text }]}
+              />
+              {!validOffer ? <Text style={styles.offerValidation}>Enter an offer title and a valid discounted price or percentage.</Text> : null}
+            </View>
+          )}
 
           {/* Category chips */}
           <Text style={[styles.label, { color: colors.text }]}>Category</Text>
@@ -1429,21 +1784,21 @@ function SellModal({
 
           {/* Submit */}
           <Pressable
-            disabled={!title.trim() || !validPrice || submitting}
+            disabled={!title.trim() || !validPrice || !validOffer || submitting}
             style={[
               styles.primary,
               { backgroundColor: colors.accent },
-              (!title.trim() || !validPrice || submitting) && styles.disabled,
+              (!title.trim() || !validPrice || !validOffer || submitting) && styles.disabled,
             ]}
             onPress={handleSubmit}
             accessibilityRole="button"
-            accessibilityLabel="Publish listing"
+            accessibilityLabel={editingListing ? "Save listing changes" : "Publish listing"}
           >
             {submitting ? (
               <ActivityIndicator color={colors.accentText} />
             ) : (
               <Text style={[styles.primaryText, { color: colors.accentText }]}>
-                Publish listing
+                {editingListing ? "Save changes" : "Publish listing"}
               </Text>
             )}
           </Pressable>
@@ -1477,10 +1832,10 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 12,
   },
-  navItem: { alignItems: "center", minWidth: 52, paddingTop: 2, minHeight: 52, justifyContent: "center" },
+  navItem: { alignItems: "center", flex: 1, minWidth: 42, paddingTop: 2, minHeight: 52, justifyContent: "center" },
   navIconWrapper: { position: "relative" },
   navIcon: { fontSize: 24, textAlign: "center", fontWeight: "500" },
-  navLabel: { fontSize: 10, marginTop: 4, fontWeight: "600" },
+  navLabel: { fontSize: 9, marginTop: 4, fontWeight: "600" },
   navLabelActive: { fontWeight: "800" },
   navIndicator: { width: 14, height: 3, borderRadius: 2, marginTop: 4 },
   badge: {
@@ -1582,6 +1937,11 @@ const styles = StyleSheet.create({
   detailTitle: { fontSize: 25, fontWeight: "800", marginTop: 8 },
   detailPrice: { fontSize: 22, fontWeight: "800", marginTop: 8 },
   detailPriceSold: { color: "#87918C", textDecorationLine: "line-through" },
+  offerDetail: { borderRadius: 12, padding: 12, marginTop: 12, gap: 4 },
+  offerDetailTitle: { fontSize: 13, fontWeight: "900" },
+  offerDetailPrice: { fontSize: 17, fontWeight: "900" },
+  offerOriginal: { color: "#87918C", fontSize: 12, fontWeight: "600", textDecorationLine: "line-through" },
+  offerDetailMeta: { fontSize: 11, lineHeight: 16 },
   muted: { fontSize: 12 },
   description: { fontSize: 14, lineHeight: 21, marginVertical: 20 },
   markSoldButton: {
@@ -1592,6 +1952,15 @@ const styles = StyleSheet.create({
     marginTop: 20,
     borderWidth: 1,
   },
+  editListingButton: {
+    minHeight: 42,
+    borderWidth: 1,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+  },
+  editListingText: { fontWeight: "800", fontSize: 13 },
   markSoldButtonText: { fontWeight: "800", fontSize: 14 },
   soldNoticeBox: {
     height: 50,
@@ -1682,6 +2051,14 @@ const styles = StyleSheet.create({
     minHeight: 88,
     textAlignVertical: "top",
   },
+  offerToggle: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 16 },
+  offerToggleMark: { fontSize: 20, fontWeight: "900" },
+  offerToggleTitle: { fontSize: 13, fontWeight: "800" },
+  offerToggleHint: { fontSize: 11, marginTop: 2 },
+  offerForm: { borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 10 },
+  offerInputs: { flexDirection: "row", gap: 8 },
+  offerInput: { flex: 1, minWidth: 0 },
+  offerValidation: { color: "#B64950", fontSize: 11, marginTop: 8 },
   chipRow: { gap: 8, paddingBottom: 4 },
   chip: {
     height: 34,

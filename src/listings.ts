@@ -4,24 +4,36 @@ import {
   doc,
   runTransaction,
   serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "./firebase";
 import { Listing } from "./types";
 
 export async function createListing(listing: Listing): Promise<string> {
   if (!db) throw new Error("Firebase is not configured.");
+  const { id: _id, ...data } = listing;
   const reference = await addDoc(collection(db, "listings"), {
-    ...listing,
+    ...data,
     createdAt: serverTimestamp(),
   });
   return reference.id;
 }
 
-export async function markListingAsSold(
+export async function updateListing(listing: Listing): Promise<void> {
+  if (!db) throw new Error("Firebase is not configured.");
+  const { id, ...data } = listing;
+  await updateDoc(doc(db, "listings", id), {
+    ...data,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateListingStatus(
   listingId: string,
   sellerId: string,
+  status: "available" | "sold",
 ): Promise<void> {
-  if (!db) return;
+  if (!db) throw new Error("Firebase is not configured.");
   const listingRef = doc(db, "listings", listingId);
   await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(listingRef);
@@ -30,14 +42,11 @@ export async function markListingAsSold(
     if (listing.sellerId !== sellerId) {
       throw new Error("Only the seller can update this listing.");
     }
-    if (listing.status === "sold") {
-      throw new Error("This listing has already been sold.");
-    }
-    if (listing.status && listing.status !== "available") {
-      throw new Error("This listing is not currently available.");
+    if (listing.status === status) {
+      throw new Error(`This listing is already marked ${status}.`);
     }
     transaction.update(listingRef, {
-      status: "sold",
+      status,
       updatedAt: serverTimestamp(),
     });
   });
