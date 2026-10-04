@@ -14,6 +14,7 @@ import { ThemeColors } from "../theme";
 export function ProfilePage({
   user,
   photoURL,
+  username,
   photoBusy,
   colors,
   savedCount,
@@ -30,6 +31,7 @@ export function ProfilePage({
 }: {
   user: User | null;
   photoURL: string | null;
+  username: string;
   photoBusy: boolean;
   colors: ThemeColors;
   savedCount: number;
@@ -72,7 +74,7 @@ export function ProfilePage({
           ) : (
             <View style={[styles.avatar, styles.avatarFallback, { backgroundColor: colors.accentSoft }]}>
               <Text style={[styles.initials, { color: colors.accent }]}>
-                {user ? initials : "?"}
+                {user ? initials : "P"}
               </Text>
             </View>
           )}
@@ -92,6 +94,7 @@ export function ProfilePage({
         </View>
         <View style={styles.heroText}>
           <Text style={[styles.name, { color: colors.text }]}>{name}</Text>
+          {user && username ? <Text style={[styles.username, { color: colors.accent }]}>@{username}</Text> : null}
           <Text style={[styles.email, { color: colors.muted }]}>
             {user?.email || "Sign in to sell and save"}
           </Text>
@@ -320,6 +323,7 @@ const styles = StyleSheet.create({
   initials: { fontSize: 22, fontWeight: "800" },
   heroText: { flex: 1, gap: 4 },
   name: { fontSize: 20, fontWeight: "800" },
+  username: { fontSize: 12, fontWeight: "700" },
   email: { fontSize: 12 },
   verifiedBadge: {
     alignSelf: "flex-start",

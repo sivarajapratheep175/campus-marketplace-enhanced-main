@@ -21,6 +21,7 @@ export function ListingCard({
   onOpen: () => void;
 }) {
   const isSold = item.status === "sold";
+  const displayPrice = item.offer?.offerPrice ?? item.price;
 
   return (
     <Pressable
@@ -38,7 +39,12 @@ export function ListingCard({
         />
         {isSold && (
           <View style={styles.soldBadge}>
-            <Text style={styles.soldBadgeText}>SOLD</Text>
+            <Text style={styles.soldBadgeText}>SOLD OUT</Text>
+          </View>
+        )}
+        {item.offer && !isSold && (
+          <View style={styles.offerBadge}>
+            <Text style={styles.offerBadgeText}>SPECIAL OFFER</Text>
           </View>
         )}
         <Pressable
@@ -56,15 +62,22 @@ export function ListingCard({
           <Text style={[styles.title, { color: colors.text }]} numberOfLines={2}>
             {item.title}
           </Text>
-          <Text style={[styles.price, { color: colors.accent }, isSold && styles.soldPrice]}>
-            {formatPrice(item.price, currency, exchangeRate)}
-          </Text>
+          <View style={styles.priceColumn}>
+            <Text style={[styles.price, { color: colors.accent }, isSold && styles.soldPrice]}>
+              {formatPrice(displayPrice, currency, exchangeRate)}
+            </Text>
+            {item.offer && (
+              <Text style={[styles.originalPrice, { color: colors.muted }]}>
+                {formatPrice(item.offer.originalPrice, currency, exchangeRate)}
+              </Text>
+            )}
+          </View>
         </View>
         <Text style={[styles.muted, { color: colors.muted }]}>
           {item.condition} · {item.campus}
         </Text>
         <Text style={[styles.tiny, { color: colors.muted }]}>
-          {isSold ? "● Sold" : `Listed by ${item.seller}`}
+          {isSold ? "● Sold out" : `Listed by ${item.seller}`}
         </Text>
       </View>
     </Pressable>
@@ -97,6 +110,7 @@ const styles = StyleSheet.create({
   red: { color: "#C3535B" },
   body: { padding: 12 },
   row: { flexDirection: "row", justifyContent: "space-between", gap: 5 },
+  priceColumn: { alignItems: "flex-end", gap: 2 },
   title: {
     flex: 1,
     minHeight: 34,
@@ -130,6 +144,18 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0.8,
   },
+  offerBadge: {
+    position: "absolute",
+    left: 10,
+    bottom: 10,
+    backgroundColor: "#C3535B",
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 6,
+    zIndex: 2,
+  },
+  offerBadgeText: { color: "#FFF", fontSize: 8, fontWeight: "900", letterSpacing: 0.4 },
+  originalPrice: { fontSize: 10, textDecorationLine: "line-through", textAlign: "right" },
   soldPrice: {
     color: "#87918C",
     textDecorationLine: "line-through",

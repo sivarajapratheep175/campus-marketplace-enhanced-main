@@ -2,6 +2,7 @@ import { User } from "firebase/auth";
 import {
   doc,
   getDoc,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -12,6 +13,7 @@ import { defaultUserSettings, UserSettings } from "./settings";
 
 export type UserProfile = {
   uid: string;
+  username: string;
   displayName: string;
   email: string;
   photoURL: string | null;
@@ -20,56 +22,75 @@ export type UserProfile = {
 };
 
 export async function ensureUserProfile(user: User): Promise<void> {
-  if (!db) return;
-  const profileRef = doc(db, "users", user.uid);
-  const profileSnapshot = await getDoc(profileRef);
-  const identity = {
-    uid: user.uid,
-    displayName:
-      user.displayName || user.email?.split("@")[0] || "Campus student",
-    email: user.email || "",
-    updatedAt: serverTimestamp(),
-  };
+  const firestore = db;
+  if (!firestore) return;
+  const profileRef = doc(firestore, "users", user.uid);
+  const publicProfileRef = doc(firestore, "publicProfiles", user.uid);
+  const name = user.displayName || user.email?.split("@")[0] || "Campus student";
+  const cleanUsername = (user.email?.split("@")[0] || "student")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 20);
+  const baseUsername =
+    cleanUsername.length >= 2 ? cleanUsername : `${cleanUsername || "student"}1`;
 
-  if (profileSnapshot.exists()) {
+  await runTransaction(firestore, async (transaction) => {
+    const profileSnapshot = await transaction.get(profileRef);
     const data = profileSnapshot.data();
-    await setDoc(
-      profileRef,
-      {
-        ...identity,
-        ...(typeof data.createdAt === "undefined"
-          ? { createdAt: serverTimestamp() }
-          : {}),
-        ...(typeof data.photoURL === "undefined"
-          ? { photoURL: user.photoURL || null }
-          : {}),
-        ...(typeof data.campus === "string" ? {} : { campus: "North Campus" }),
-        ...(data.settings && typeof data.settings === "object"
-          ? {
-              settings: {
-                ...(data.settings.theme === "light" ||
-                data.settings.theme === "dark"
-                  ? {}
-                  : { theme: defaultUserSettings.theme }),
-                ...(data.settings.currency === "USD" ||
-                data.settings.currency === "LKR"
-                  ? {}
-                  : { currency: defaultUserSettings.currency }),
-              },
-            }
-          : { settings: defaultUserSettings }),
-      },
-      { merge: true },
-    );
-    return;
-  }
+    let username =
+      typeof data?.username === "string" ? data.username : "";
+    if (!username) {
+      const simpleUsername = baseUsername;
+      const simpleUsernameRef = doc(firestore, "usernames", simpleUsername);
+      const simpleUsernameSnapshot = await transaction.get(simpleUsernameRef);
+      username = simpleUsername;
+      if (
+        simpleUsernameSnapshot.exists() &&
+        simpleUsernameSnapshot.data().uid !== user.uid
+      ) {
+        username = `${baseUsername}_${user.uid.slice(-6).toLowerCase()}`;
+        const suffixSnapshot = await transaction.get(
+          doc(firestore, "usernames", username),
+        );
+        if (suffixSnapshot.exists() && suffixSnapshot.data().uid !== user.uid) {
+          username = `${baseUsername}_${user.uid.toLowerCase()}`;
+          const uniqueSnapshot = await transaction.get(
+            doc(firestore, "usernames", username),
+          );
+          if (uniqueSnapshot.exists() && uniqueSnapshot.data().uid !== user.uid) {
+            throw new Error("Could not generate a unique username for this account.");
+          }
+        }
+      }
+    }
 
-  await setDoc(profileRef, {
-    ...identity,
-    createdAt: serverTimestamp(),
-    photoURL: user.photoURL || null,
-    campus: "North Campus",
-    settings: defaultUserSettings,
+    const usernameRef = doc(firestore, "usernames", username);
+    const profile = {
+      uid: user.uid,
+      username,
+      displayName: name,
+      email: user.email || "",
+      photoURL:
+        typeof data?.photoURL === "string" ? data.photoURL : user.photoURL || null,
+      campus: typeof data?.campus === "string" ? data.campus : "North Campus",
+      settings: data?.settings || defaultUserSettings,
+      ...(data?.createdAt ? {} : { createdAt: serverTimestamp() }),
+      updatedAt: serverTimestamp(),
+    };
+    transaction.set(profileRef, profile, { merge: true });
+    transaction.set(publicProfileRef, {
+      uid: user.uid,
+      username,
+      displayName: name,
+      photoURL: profile.photoURL,
+      campus: profile.campus,
+    });
+    transaction.set(usernameRef, {
+      uid: user.uid,
+      username,
+      displayName: name,
+      photoURL: profile.photoURL,
+    });
   });
 }
 
@@ -106,6 +127,12 @@ export async function saveProfilePhoto(
     photoURL,
     updatedAt: serverTimestamp(),
   });
+  await setDoc(doc(db, "publicProfiles", uid), { photoURL }, { merge: true });
+  const profile = await getDoc(doc(db, "users", uid));
+  const username = profile.data()?.username;
+  if (typeof username === "string") {
+    await setDoc(doc(db, "usernames", username), { photoURL }, { merge: true });
+  }
   return photoURL;
 }
 
